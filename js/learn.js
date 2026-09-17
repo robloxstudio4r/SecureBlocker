@@ -9,10 +9,11 @@ let mediaStream = null;
 let captureTimer = null;
 let tabTimer = null;
 let heartbeatTimer = null;
+let shareWatchTimer = null;
 let extensionReady = false;
 
 // =================================================================
-// 0) AUTH GUARD — allow students, teachers, and admins
+// 0) AUTH GUARD
 // =================================================================
 const authSession = await requireAuth(['student', 'teacher', 'admin']);
 if (!authSession) throw new Error('not signed in');
@@ -28,7 +29,7 @@ document.getElementById('whoami').textContent =
   `Signed in as ${profile?.full_name || user.email}`;
 
 // =================================================================
-// 1) GATE — wait for the user to click "Start lesson"
+// 1) START LESSON (screen share gate)
 // =================================================================
 document.getElementById('startBtn').addEventListener('click', async () => {
   const btn = document.getElementById('startBtn');
@@ -37,15 +38,15 @@ document.getElementById('startBtn').addEventListener('click', async () => {
   btn.disabled = true;
   btn.textContent = 'Requesting screen access…';
 
-  // -------------------------------------------------------------
-  // Request screen share FIRST (must be in the click handler)
-  // -------------------------------------------------------------
+  // --- Request screen share FIRST (must be inside the click handler)
   try {
     mediaStream = await navigator.mediaDevices.getDisplayMedia({
       video: { frameRate: 5 },
       audio: false
     });
+    console.log('[learn] got display stream, tracks:', mediaStream.getVideoTracks().length);
   } catch (e) {
+    console.warn('[learn] getDisplayMedia rejected:', e);
     err.textContent = 'Screen sharing was denied. You must share your screen to begin.';
     err.hidden = false;
     btn.disabled = false;
@@ -53,15 +54,7 @@ document.getElementById('startBtn').addEventListener('click', async () => {
     return;
   }
 
-  // Student stopped sharing via the browser bar
-  mediaStream.getVideoTracks()[0].addEventListener('ended', () => {
-    document.getElementById('shareOverlay').hidden = false;
-    stopCapture();
-  });
-
-  // -------------------------------------------------------------
-  // Create session row
-  // -------------------------------------------------------------
+  // --- Create session row
   const { data: myMemberships } = await supabase
     .from('class_members')
     .select('class_id, added_at')
@@ -70,7 +63,7 @@ document.getElementById('startBtn').addEventListener('click', async () => {
     .limit(1);
   const primaryClassId = myMemberships?.[0]?.class_id ?? null;
 
-  // Close any dangling old sessions
+  // Close any prior open sessions for this user
   await supabase.from('sessions')
     .update({ ended_at: new Date().toISOString(), status: 'closed' })
     .eq('student_id', user.id)
@@ -87,6 +80,7 @@ document.getElementById('startBtn').addEventListener('click', async () => {
     .single();
 
   if (error) {
+    console.error('[learn] session insert failed:', error);
     err.textContent = error.message;
     err.hidden = false;
     btn.disabled = false;
@@ -95,16 +89,13 @@ document.getElementById('startBtn').addEventListener('click', async () => {
   }
 
   session = sess;
+  console.log('[learn] session created:', session.id);
 
-  // -------------------------------------------------------------
-  // Swap gate -> lesson view
-  // -------------------------------------------------------------
+  // --- Swap gate → lesson
   document.getElementById('gate').hidden = true;
   document.getElementById('lessonWrap').hidden = false;
 
-  // -------------------------------------------------------------
-  // Start all engines
-  // -------------------------------------------------------------
+  // --- Start engines
   startCapture();
   startHeartbeat();
   startTabPolling();
@@ -113,10 +104,11 @@ document.getElementById('startBtn').addEventListener('click', async () => {
   wireStatusPill();
   wireTokenRefresh();
   wireMembershipWatcher();
+  startShareWatcher();
 });
 
 // =================================================================
-// 2) RESUME SCREEN SHARING
+// 2) RESUME screen sharing after a stop
 // =================================================================
 document.getElementById('shareResume').addEventListener('click', async () => {
   try {
@@ -124,18 +116,15 @@ document.getElementById('shareResume').addEventListener('click', async () => {
       video: { frameRate: 5 },
       audio: false
     });
-    mediaStream.getVideoTracks()[0].addEventListener('ended', () => {
-      document.getElementById('shareOverlay').hidden = false;
-      stopCapture();
-    });
     document.getElementById('shareOverlay').hidden = true;
     startCapture();
-  } catch {}
+  } catch (e) {
+    console.warn('[learn] resume denied:', e);
+  }
 });
 
 // =================================================================
 // 3) SCREEN CAPTURE ENGINE
-//    getDisplayMedia stream -> canvas -> JPEG -> Supabase Storage
 // =================================================================
 const canvas = document.createElement('canvas');
 const ctx = canvas.getContext('2d', { alpha: false });
@@ -143,7 +132,7 @@ const video = document.createElement('video');
 video.autoplay = true;
 video.muted = true;
 video.playsInline = true;
-video.style.display = 'none';
+video.style.cssText = 'position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;';
 document.body.appendChild(video);
 
 function startCapture() {
@@ -152,7 +141,6 @@ function startCapture() {
   video.play().catch(() => {});
 
   if (captureTimer) clearInterval(captureTimer);
-  // First frame after 1s, then every 3 seconds
   setTimeout(captureFrame, 1000);
   captureTimer = setInterval(captureFrame, 3000);
 }
@@ -166,7 +154,6 @@ async function captureFrame() {
   if (!session || !accessToken || !mediaStream) return;
   if (video.videoWidth === 0) return;
 
-  // Downscale to max 1280px wide to save bandwidth
   const maxW = 1280;
   const scale = Math.min(1, maxW / video.videoWidth);
   const w = Math.floor(video.videoWidth * scale);
@@ -175,9 +162,7 @@ async function captureFrame() {
   canvas.height = h;
   ctx.drawImage(video, 0, 0, w, h);
 
-  const blob = await new Promise(res =>
-    canvas.toBlob(res, 'image/jpeg', 0.55)
-  );
+  const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.55));
   if (!blob) return;
 
   const path = `${session.id}.jpg`;
@@ -196,13 +181,10 @@ async function captureFrame() {
         body: blob
       }
     );
-
     if (!res.ok) {
-      console.warn('Screenshot upload failed', res.status, await res.text());
+      console.warn('[learn] screenshot upload failed', res.status, await res.text());
       return;
     }
-
-    // Stamp freshness on the session row
     await fetch(`${SUPABASE_URL}/rest/v1/sessions?id=eq.${session.id}`, {
       method: 'PATCH',
       headers: {
@@ -214,15 +196,34 @@ async function captureFrame() {
       body: JSON.stringify({ last_screenshot_at: new Date().toISOString() })
     });
   } catch (e) {
-    console.warn('Capture error', e);
+    console.warn('[learn] capture error', e);
   }
 }
 
 // =================================================================
-// 4) TAB POLLING — extension bridge
+// 4) SHARE WATCHER — poll track readyState, ignore flaky events
+// =================================================================
+function startShareWatcher() {
+  if (shareWatchTimer) clearInterval(shareWatchTimer);
+
+  shareWatchTimer = setInterval(() => {
+    if (!mediaStream) return;
+    const track = mediaStream.getVideoTracks()[0];
+
+    // If track is gone or genuinely ended, show the resume overlay
+    if (!track || track.readyState === 'ended') {
+      document.getElementById('shareOverlay').hidden = false;
+      stopCapture();
+      clearInterval(shareWatchTimer);
+      shareWatchTimer = null;
+    }
+  }, 2000);
+}
+
+// =================================================================
+// 5) TAB POLLING — extension bridge
 // =================================================================
 function startTabPolling() {
-  // Announce config repeatedly until extension ACKs
   let announceAttempts = 0;
   const announceLoop = setInterval(() => {
     if (!accessToken) return;
@@ -237,7 +238,6 @@ function startTabPolling() {
     if (extensionReady || announceAttempts > 30) clearInterval(announceLoop);
   }, 1000);
 
-  // Ask for tabs every 6 seconds
   if (tabTimer) clearInterval(tabTimer);
   tabTimer = setInterval(() => {
     window.postMessage({ type: 'GET_TABS' }, '*');
@@ -255,12 +255,10 @@ async function onExtensionMessage(event) {
     extensionReady = true;
     return;
   }
-
   if (msg.type !== 'TABS_RESULT') return;
   if (!session) return;
 
   const tabs = msg.tabs || [];
-
   try {
     await supabase.from('tab_snapshots').delete().eq('session_id', session.id);
     if (tabs.length) {
@@ -278,12 +276,12 @@ async function onExtensionMessage(event) {
       .update({ extension_connected: true })
       .eq('id', session.id);
   } catch (e) {
-    console.warn('tab sync failed', e);
+    console.warn('[learn] tab sync failed', e);
   }
 }
 
 // =================================================================
-// 5) HEARTBEAT
+// 6) HEARTBEAT
 // =================================================================
 function startHeartbeat() {
   if (heartbeatTimer) clearInterval(heartbeatTimer);
@@ -297,7 +295,7 @@ function startHeartbeat() {
 }
 
 // =================================================================
-// 6) LOCK LISTENER
+// 7) LOCK LISTENER
 // =================================================================
 function watchLock() {
   supabase.channel(`session-${session.id}`)
@@ -317,10 +315,9 @@ function watchLock() {
 }
 
 // =================================================================
-// 7) GUARDS — beforeunload, fullscreen, pagehide
+// 8) GUARDS — beforeunload, fullscreen (NO pagehide end)
 // =================================================================
 function installGuards() {
-  // "Are you sure you want to leave?" dialog
   window.addEventListener('beforeunload', (e) => {
     beaconEvent('close_attempt');
     e.preventDefault();
@@ -328,33 +325,17 @@ function installGuards() {
     return '';
   });
 
-  // Clean up when the page actually unloads
-  window.addEventListener('pagehide', () => {
-    if (!session || !accessToken) return;
-    fetch(`${SUPABASE_URL}/rest/v1/sessions?id=eq.${session.id}`, {
-      method: 'PATCH',
-      keepalive: true,
-      headers: {
-        apikey: SUPABASE_ANON_KEY,
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-        Prefer: 'return=minimal'
-      },
-      body: JSON.stringify({
-        ended_at: new Date().toISOString(),
-        status: 'closed'
-      })
-    }).catch(() => {});
+  // Log but do NOT end the session on pagehide — session goes stale naturally
+  window.addEventListener('pagehide', (e) => {
+    console.log('[learn] pagehide fired, persisted =', e.persisted);
   });
 
-  // Enter fullscreen on next click (user gesture required)
   document.addEventListener('click', () => {
     if (!document.fullscreenElement) {
       document.documentElement.requestFullscreen().catch(() => {});
     }
   }, { once: true });
 
-  // Detect escape from fullscreen
   document.addEventListener('fullscreenchange', () => {
     const lockOverlay = document.getElementById('lockOverlay');
     const fsOverlay = document.getElementById('fsOverlay');
@@ -369,7 +350,7 @@ function installGuards() {
 }
 
 // =================================================================
-// 8) STATUS PILL
+// 9) STATUS PILL
 // =================================================================
 function wireStatusPill() {
   const pill = document.getElementById('statusPill');
@@ -384,7 +365,6 @@ function wireStatusPill() {
         : 'Reconnecting…';
     });
 
-  // Update label periodically as extension connects/disconnects
   setInterval(() => {
     if (pill.classList.contains('off')) return;
     text.textContent = extensionReady ? 'Monitored' : 'Monitored (no extension)';
@@ -392,7 +372,7 @@ function wireStatusPill() {
 }
 
 // =================================================================
-// 9) TOKEN REFRESH
+// 10) TOKEN REFRESH
 // =================================================================
 function wireTokenRefresh() {
   supabase.auth.onAuthStateChange((_e, s) => {
@@ -404,7 +384,7 @@ function wireTokenRefresh() {
 }
 
 // =================================================================
-// 10) MEMBERSHIP WATCHER — assign class if teacher adds us mid-session
+// 11) MEMBERSHIP WATCHER
 // =================================================================
 function wireMembershipWatcher() {
   supabase.channel(`mem-${user.id}`)
@@ -423,7 +403,7 @@ function wireMembershipWatcher() {
 }
 
 // =================================================================
-// 11) BEACON — fire-and-forget event logger (survives unload)
+// 12) BEACON
 // =================================================================
 function beaconEvent(eventType, meta = {}) {
   if (!accessToken || !session) return;
