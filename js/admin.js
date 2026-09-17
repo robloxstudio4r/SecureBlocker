@@ -9,10 +9,11 @@ const sessionsMap = new Map();
 const tabsMap = new Map();
 const loadedScreenshots = new Map();
 const events = [];
+let modalOpen = false;
 
-// -----------------------------------------------------------------
+// =================================================================
 // LOAD
-// -----------------------------------------------------------------
+// =================================================================
 async function load() {
   const [{ data: sessions }, { data: tabs }, { data: evs }] = await Promise.all([
     supabase.from('sessions')
@@ -40,9 +41,9 @@ async function load() {
   render();
 }
 
-// -----------------------------------------------------------------
+// =================================================================
 // REALTIME
-// -----------------------------------------------------------------
+// =================================================================
 supabase.channel('admin-stream')
   .on('postgres_changes', { event: '*', schema: 'public', table: 'sessions' },
     (p) => {
@@ -74,9 +75,9 @@ supabase.channel('admin-stream')
     })
   .subscribe();
 
-// -----------------------------------------------------------------
+// =================================================================
 // ACTIONS
-// -----------------------------------------------------------------
+// =================================================================
 async function closeTab(sessionId, studentId, tabId, url) {
   let domain = '';
   try { domain = new URL(url).hostname; } catch {}
@@ -115,26 +116,52 @@ async function endSession(id) {
   }).eq('id', id);
 }
 
-// -----------------------------------------------------------------
+// =================================================================
 // HELPERS
-// -----------------------------------------------------------------
+// =================================================================
 function timeAgo(iso) {
   if (!iso) return 'never';
   const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
   if (s < 60) return `${s}s ago`;
-  if (s < 3600) return `${Math.floor(s/60)}m ago`;
-  return `${Math.floor(s/3600)}h ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  return `${Math.floor(s / 3600)}h ago`;
 }
 function esc(str) {
   return String(str ?? '').replace(/[&<>"']/g, c =>
-    ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
+function isLive(iso) {
+  if (!iso) return false;
+  return (Date.now() - new Date(iso).getTime()) < 10000;
+}
+
+// =================================================================
+// LIVE SCREENSHOT REFRESH
+// =================================================================
 async function refreshScreenshots() {
   const imgs = document.querySelectorAll('.screenshot[data-sid]');
   for (const img of imgs) {
     const sid = img.dataset.sid;
     const session = sessionsMap.get(sid);
     if (!session?.last_screenshot_at) continue;
+
+    const ageMs = Date.now() - new Date(session.last_screenshot_at).getTime();
+    const live = ageMs < 10000;
+
+    const wrap = img.closest('.screen-wrap');
+    if (wrap) {
+      const badge = wrap.querySelector('.badge');
+      if (badge) {
+        badge.textContent = live
+          ? '🔴 LIVE'
+          : `Screen · ${timeAgo(session.last_screenshot_at)}`;
+        badge.style.background = live
+          ? 'rgba(220,38,38,.9)'
+          : 'rgba(0,0,0,.75)';
+      }
+    }
+
+    if (ageMs > 120000) continue;
     if (loadedScreenshots.get(sid) === session.last_screenshot_at) continue;
 
     const { data, error } = await supabase.storage
@@ -142,31 +169,55 @@ async function refreshScreenshots() {
       .createSignedUrl(`${sid}.jpg`, 600);
 
     if (!error && data?.signedUrl) {
-      img.src = data.signedUrl;
+      img.src = `${data.signedUrl}&t=${Date.now()}`;
       loadedScreenshots.set(sid, session.last_screenshot_at);
     }
   }
 }
+setInterval(refreshScreenshots, 4000);
+
+// =================================================================
+// FULLSCREEN PREVIEW MODAL
+// =================================================================
 function openModal(src, alt) {
+  if (modalOpen) return;
+  modalOpen = true;
+
   const div = document.createElement('div');
   div.className = 'screen-modal';
   div.innerHTML = `<img src="${src}" alt="${esc(alt)}" />`;
-  div.addEventListener('click', () => div.remove());
+
+  const close = () => {
+    div.remove();
+    modalOpen = false;
+    document.removeEventListener('keydown', onEsc);
+  };
+  const onEsc = (e) => { if (e.key === 'Escape') close(); };
+
+  div.addEventListener('click', close);
+  document.addEventListener('keydown', onEsc);
   document.body.appendChild(div);
 }
 
-// -----------------------------------------------------------------
+// =================================================================
 // RENDER
-// -----------------------------------------------------------------
+// =================================================================
 function render() {
   const sessions = Array.from(sessionsMap.values());
   const tabsTotal = Array.from(tabsMap.values()).reduce((a, l) => a + l.length, 0);
 
+  // Stats
   document.getElementById('statTotal').textContent = sessions.length;
-  document.getElementById('statLocked').textContent = sessions.filter(s => s.status === 'locked').length;
-  document.getElementById('statCloses').textContent = events.filter(e => e.event_type === 'close_attempt').length;
+  document.getElementById('statLocked').textContent =
+    sessions.filter(s => s.status === 'locked').length;
+  document.getElementById('statCloses').textContent =
+    events.filter(e => e.event_type === 'close_attempt').length;
   document.getElementById('statTabs').textContent = tabsTotal;
 
+  // Preserve scroll
+  const scrollY = window.scrollY;
+
+  // Sessions
   const host = document.getElementById('roster');
   host.innerHTML = sessions.length ? sessions.map(s => {
     const tabs = tabsMap.get(s.id) ?? [];
@@ -178,15 +229,19 @@ function render() {
       ? `<button class="btn-sm btn-green" data-act="unlock" data-id="${s.id}">Unlock</button>`
       : `<button class="btn-sm btn-yellow" data-act="lock" data-id="${s.id}">Lock</button>`;
 
+    const live = isLive(s.last_screenshot_at);
     const screenHtml = s.last_screenshot_at
       ? `<div class="screen-wrap">
-           <span class="badge">Screen · ${timeAgo(s.last_screenshot_at)}</span>
-           <img class="screenshot" data-sid="${s.id}" alt="Screen of ${esc(name)}" />
+           <span class="badge" style="background:${live ? 'rgba(220,38,38,.9)' : 'rgba(0,0,0,.75)'}">
+             ${live ? '🔴 LIVE' : `Screen · ${timeAgo(s.last_screenshot_at)}`}
+           </span>
+           <img class="screenshot" data-sid="${s.id}" alt="Screen of ${esc(name)}"
+                style="background:#111;" />
          </div>`
-      : `<div class="screen-empty">No screenshot yet</div>`;
+      : `<div class="screen-empty">Waiting for screen share…</div>`;
 
     const currentHtml = current ? `
-      <p style="font-size:11px;color:#666;margin-bottom:4px;">CURRENT TAB</p>
+      <p style="font-size:11px;color:#666;margin:0 0 4px;">CURRENT TAB</p>
       <div class="tab-row current">
         ${current.favicon_url ? `<img src="${esc(current.favicon_url)}" />` : ''}
         <span class="title">${esc(current.title || current.url)}</span>
@@ -209,7 +264,7 @@ function render() {
         </div>`).join('')}` : '';
 
     return `
-      <div class="card">
+      <div class="card" data-session="${s.id}">
         <div class="row between" style="margin-bottom:12px;">
           <div>
             <strong>${esc(name)}</strong>
@@ -221,13 +276,14 @@ function render() {
           <div class="row">
             ${lockBtn}
             <button class="btn-sm btn-blue" data-act="screenshot"
-              data-sid="${s.id}" data-uid="${s.student_id}">Capture now</button>
+              data-sid="${s.id}" data-uid="${s.student_id}">Refresh now</button>
             <button class="btn-sm btn-red" data-act="close-all"
               data-sid="${s.id}" data-uid="${s.student_id}">Close all</button>
             <button class="btn-sm btn-gray" data-act="end"
-              data-id="${s.id}">End</button>
+              data-id="${s.id}">End session</button>
           </div>
         </div>
+
         <div class="session-body">
           <div>
             ${currentHtml}
@@ -237,8 +293,9 @@ function render() {
           <div>${screenHtml}</div>
         </div>
       </div>`;
-  }).join('') : '<p>No active sessions.</p>';
+  }).join('') : '<p style="color:#888;">No active sessions.</p>';
 
+  // Events
   document.getElementById('events').innerHTML = events.length ? events.map(e => `
     <div class="event-row">
       <span>
@@ -250,6 +307,7 @@ function render() {
       <span style="color:#999;">${timeAgo(e.occurred_at)}</span>
     </div>`).join('') : '<div class="event-row">No events yet.</div>';
 
+  // Wire session buttons
   host.querySelectorAll('button[data-act]').forEach(btn => {
     btn.addEventListener('click', async () => {
       const a = btn.dataset.act;
@@ -265,6 +323,7 @@ function render() {
     });
   });
 
+  // Wire screen preview clicks
   host.querySelectorAll('.screen-wrap').forEach(wrap => {
     wrap.addEventListener('click', () => {
       const img = wrap.querySelector('img');
@@ -272,9 +331,11 @@ function render() {
     });
   });
 
+  window.scrollTo(0, scrollY);
   refreshScreenshots();
 }
 
-setInterval(refreshScreenshots, 15000);
-
+// =================================================================
+// INIT
+// =================================================================
 load();
