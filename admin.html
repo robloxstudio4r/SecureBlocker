@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ClassroomGuard — Admin</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="container">
+    <div class="row between" style="margin-bottom:20px;">
+      <h1>Admin Overview</h1>
+      <div class="row">
+        <a href="teach.html" class="link">Teacher view</a>
+        <a href="admin-users.html" class="link">Users</a>
+        <button id="logout" class="btn-sm btn-gray">Sign out</button>
+      </div>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><div class="num" id="statTotal">0</div><div class="lbl">Active sessions</div></div>
+      <div class="stat"><div class="num" id="statLocked">0</div><div class="lbl">Locked</div></div>
+      <div class="stat"><div class="num" id="statCloses">0</div><div class="lbl">Close attempts</div></div>
+      <div class="stat"><div class="num" id="statTabs">0</div><div class="lbl">Open tabs</div></div>
+    </div>
+
+    <h2 style="margin-bottom:10px;">Sessions</h2>
+    <div id="roster"></div>
+
+    <h2 style="margin:24px 0 10px;">Recent events</h2>
+    <div class="events" id="events"></div>
+  </div>
+  <script type="module" src="js/admin.js"></script>
+</body>
+</html>
