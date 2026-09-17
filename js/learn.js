@@ -3,33 +3,63 @@ import { requireAuth, getProfile } from './auth.js';
 
 let user = null;
 let profile = null;
-let session = null;       // Supabase session row (public.sessions)
+let session = null;
 let accessToken = null;
 
 // -----------------------------------------------------------------
-// 1) INIT — auth, profile, create session row
+// 1) AUTH GUARD
 // -----------------------------------------------------------------
 const authSession = await requireAuth(['student']);
 if (!authSession) throw new Error('not signed in');
 
 user = authSession.user;
-accessToken = authSession.session?.access_token
-           || (await supabase.auth.getSession()).data.session?.access_token;
 
+// Grab the access token (fresh, in case this page loaded late)
+{
+  const { data: { session: s } } = await supabase.auth.getSession();
+  accessToken = s?.access_token ?? null;
+}
+
+// -----------------------------------------------------------------
+// 2) PROFILE
+// -----------------------------------------------------------------
 profile = await getProfile(user.id);
 document.getElementById('whoami').textContent =
   `Signed in as ${profile?.full_name || user.email}`;
 
-// End any dangling old sessions
+// -----------------------------------------------------------------
+// 3) FIND MY PRIMARY CLASS (first class I'm a member of)
+// -----------------------------------------------------------------
+const { data: myMemberships } = await supabase
+  .from('class_members')
+  .select('class_id, added_at')
+  .eq('student_id', user.id)
+  .order('added_at', { ascending: true })
+  .limit(1);
+
+const primaryClassId = myMemberships?.[0]?.class_id ?? null;
+
+// If we don't have a class yet, still continue — teacher may add us later
+// (Realtime will pick it up on reload; sessions can exist without a class)
+
+// -----------------------------------------------------------------
+// 4) END DANGLING SESSIONS from previous visits
+// -----------------------------------------------------------------
 await supabase.from('sessions')
   .update({ ended_at: new Date().toISOString(), status: 'closed' })
   .eq('student_id', user.id)
   .is('ended_at', null);
 
-// Create a fresh session
+// -----------------------------------------------------------------
+// 5) CREATE A FRESH SESSION
+// -----------------------------------------------------------------
 const { data: sess, error: sessErr } = await supabase
   .from('sessions')
-  .insert({ student_id: user.id, classroom_id: profile?.classroom_id, status: 'active' })
+  .insert({
+    student_id: user.id,
+    classroom_id: primaryClassId,
+    status: 'active'
+  })
   .select()
   .single();
 
@@ -41,7 +71,7 @@ if (sessErr) {
 session = sess;
 
 // -----------------------------------------------------------------
-// 2) TOKEN REFRESH — keep accessToken current
+// 6) TOKEN REFRESH — keep accessToken fresh
 // -----------------------------------------------------------------
 supabase.auth.onAuthStateChange((_event, s) => {
   if (s?.access_token) {
@@ -51,20 +81,17 @@ supabase.auth.onAuthStateChange((_event, s) => {
 });
 
 // -----------------------------------------------------------------
-// 3) THE "ARE YOU SURE YOU WANT TO LEAVE" DIALOG
+// 7) THE "ARE YOU SURE YOU WANT TO LEAVE" DIALOG
 // -----------------------------------------------------------------
 window.addEventListener('beforeunload', (e) => {
-  // Log the attempt (fire-and-forget, survives teardown)
   beaconEvent('close_attempt');
-
-  // Trigger the native confirmation dialog
   e.preventDefault();
-  e.returnValue = '';
+  e.returnValue = '';   // triggers native confirmation dialog
   return '';
 });
 
 // -----------------------------------------------------------------
-// 4) END SESSION when tab actually closes
+// 8) END SESSION when tab actually closes
 // -----------------------------------------------------------------
 window.addEventListener('pagehide', () => {
   if (!session || !accessToken) return;
@@ -77,12 +104,15 @@ window.addEventListener('pagehide', () => {
       'Content-Type': 'application/json',
       Prefer: 'return=minimal'
     },
-    body: JSON.stringify({ ended_at: new Date().toISOString(), status: 'closed' })
+    body: JSON.stringify({
+      ended_at: new Date().toISOString(),
+      status: 'closed'
+    })
   }).catch(() => {});
 });
 
 // -----------------------------------------------------------------
-// 5) FULLSCREEN ENTRY + ESCAPE DETECTION
+// 9) FULLSCREEN ENTRY + ESCAPE DETECTION
 // -----------------------------------------------------------------
 document.addEventListener('click', () => {
   if (!document.fullscreenElement) {
@@ -92,7 +122,9 @@ document.addEventListener('click', () => {
 
 document.addEventListener('fullscreenchange', () => {
   const overlay = document.getElementById('fsOverlay');
-  if (!document.fullscreenElement && !document.getElementById('lockOverlay').hidden) return;
+  const lockOverlay = document.getElementById('lockOverlay');
+  // Don't show the FS overlay if the teacher-lock overlay is up
+  if (!lockOverlay.hidden) return;
   overlay.hidden = !!document.fullscreenElement;
 });
 
@@ -102,7 +134,7 @@ document.getElementById('fsReturn').addEventListener('click', () => {
 });
 
 // -----------------------------------------------------------------
-// 6) HEARTBEAT every 15s
+// 10) HEARTBEAT every 15s
 // -----------------------------------------------------------------
 setInterval(() => {
   if (!session) return;
@@ -113,7 +145,7 @@ setInterval(() => {
 }, 15000);
 
 // -----------------------------------------------------------------
-// 7) LISTEN for teacher lock / unlock
+// 11) LISTEN for teacher lock / unlock
 // -----------------------------------------------------------------
 const lockChannel = supabase
   .channel(`session-${session.id}`)
@@ -132,7 +164,7 @@ const lockChannel = supabase
   .subscribe();
 
 // -----------------------------------------------------------------
-// 8) EXTENSION BRIDGE — announce config, poll tabs, push to Supabase
+// 12) EXTENSION BRIDGE — announce config, poll tabs, push to Supabase
 // -----------------------------------------------------------------
 function announceConfig() {
   if (!accessToken) return;
@@ -173,6 +205,26 @@ window.addEventListener('message', async (event) => {
 function pollTabs() { window.postMessage({ type: 'GET_TABS' }, '*'); }
 pollTabs();
 setInterval(pollTabs, 8000);
+
+// -----------------------------------------------------------------
+// 13) OPTIONAL: If a class is assigned later (teacher adds us),
+//     keep our session's classroom_id in sync
+// -----------------------------------------------------------------
+supabase
+  .channel(`my-memberships-${user.id}`)
+  .on('postgres_changes',
+    { event: 'INSERT', schema: 'public', table: 'class_members',
+      filter: `student_id=eq.${user.id}` },
+    async (payload) => {
+      // Assign this class to our current session if we didn't have one
+      if (!session.classroom_id) {
+        await supabase.from('sessions')
+          .update({ classroom_id: payload.new.class_id })
+          .eq('id', session.id);
+        session.classroom_id = payload.new.class_id;
+      }
+    })
+  .subscribe();
 
 // -----------------------------------------------------------------
 // HELPER: beacon a focus event (survives page unload)
