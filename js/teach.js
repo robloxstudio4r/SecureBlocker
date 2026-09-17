@@ -9,18 +9,21 @@ if (role === 'admin') document.getElementById('adminLink').hidden = false;
 document.getElementById('logout').addEventListener('click', signOut);
 
 const sessionsMap = new Map();
-const tabsMap = new Map();          // sessionId -> tab[]
-const loadedScreenshots = new Map(); // sessionId -> last_screenshot_at
+const tabsMap = new Map();
+const loadedScreenshots = new Map();
 let modalOpen = false;
 
 // =================================================================
-// LOAD
+// LOAD — only sessions that have heartbeated in the last 3 minutes
 // =================================================================
 async function load() {
+  const cutoff = new Date(Date.now() - 180000).toISOString();
+
   const { data: sessions } = await supabase
     .from('sessions')
     .select('*, profiles!sessions_student_id_fkey(email, full_name)')
     .is('ended_at', null)
+    .gte('last_seen_at', cutoff)
     .order('started_at', { ascending: false });
 
   sessionsMap.clear();
@@ -41,9 +44,24 @@ async function load() {
 supabase.channel('teacher-stream')
   .on('postgres_changes', { event: '*', schema: 'public', table: 'sessions' },
     (p) => {
-      if (p.eventType === 'DELETE') sessionsMap.delete(p.old.id);
-      else if (p.new.ended_at) sessionsMap.delete(p.new.id);
-      else sessionsMap.set(p.new.id, { ...sessionsMap.get(p.new.id), ...p.new });
+      if (p.eventType === 'DELETE') {
+        sessionsMap.delete(p.old.id);
+        render();
+        return;
+      }
+      if (p.new.ended_at) {
+        sessionsMap.delete(p.new.id);
+        render();
+        return;
+      }
+      // Stale check — drop sessions that stop heartbeating
+      const ageMs = Date.now() - new Date(p.new.last_seen_at).getTime();
+      if (ageMs > 180000) {
+        sessionsMap.delete(p.new.id);
+        render();
+        return;
+      }
+      sessionsMap.set(p.new.id, { ...sessionsMap.get(p.new.id), ...p.new });
       render();
     })
   .on('postgres_changes', { event: '*', schema: 'public', table: 'tab_snapshots' },
@@ -60,6 +78,19 @@ supabase.channel('teacher-stream')
       render();
     })
   .subscribe();
+
+// Sweep every 30s to hide sessions that stopped heartbeating
+setInterval(() => {
+  let changed = false;
+  const cutoff = Date.now() - 180000;
+  for (const [id, s] of sessionsMap) {
+    if (new Date(s.last_seen_at).getTime() < cutoff) {
+      sessionsMap.delete(id);
+      changed = true;
+    }
+  }
+  if (changed) render();
+}, 30000);
 
 // =================================================================
 // ACTIONS
@@ -129,7 +160,6 @@ async function refreshScreenshots() {
     const ageMs = Date.now() - new Date(session.last_screenshot_at).getTime();
     const live = ageMs < 10000;
 
-    // Update the badge
     const wrap = img.closest('.screen-wrap');
     if (wrap) {
       const badge = wrap.querySelector('.badge');
@@ -143,7 +173,6 @@ async function refreshScreenshots() {
       }
     }
 
-    // Only refetch if file changed AND recent enough to still exist
     if (ageMs > 120000) continue;
     if (loadedScreenshots.get(sid) === session.last_screenshot_at) continue;
 
@@ -157,8 +186,6 @@ async function refreshScreenshots() {
     }
   }
 }
-
-// Fast loop: 4 seconds — enough to feel live without hammering
 setInterval(refreshScreenshots, 4000);
 
 // =================================================================
@@ -196,9 +223,7 @@ function render() {
     return;
   }
 
-  // Preserve scroll position across re-renders
   const scrollY = window.scrollY;
-  const modalWasOpen = modalOpen;
 
   host.innerHTML = sessions.map(s => {
     const tabs = tabsMap.get(s.id) ?? [];
@@ -297,10 +322,7 @@ function render() {
     });
   });
 
-  // Restore scroll
   window.scrollTo(0, scrollY);
-
-  // Kick off image loads
   refreshScreenshots();
 }
 
