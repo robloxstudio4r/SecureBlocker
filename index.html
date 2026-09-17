@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ClassroomGuard — Sign in</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="card auth-card">
+    <h1>ClassroomGuard</h1>
+    <p style="margin-bottom:20px;">Sign in to continue.</p>
+
+    <form id="loginForm">
+      <input type="email" id="email" placeholder="Email" required />
+      <input type="password" id="password" placeholder="Password" required />
+      <p class="error" id="err" hidden></p>
+      <button type="submit" style="width:100%;">Sign in</button>
+    </form>
+
+    <p style="margin-top:16px; text-align:center; font-size:14px;">
+      No account? <a href="signup.html" class="link">Create one</a>
+    </p>
+  </div>
+
+  <script type="module">
+    import { supabase } from './js/supabase-client.js';
+    import { signIn } from './js/auth.js';
+
+    // If already signed in, route them home
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session) {
+      const role = session.user.app_metadata?.role || 'student';
+      window.location.href =
+        role === 'admin' ? 'admin.html' :
+        role === 'teacher' ? 'teach.html' : 'learn.html';
+    }
+
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const err = document.getElementById('err');
+      err.hidden = true;
+      const email = document.getElementById('email').value.trim();
+      const password = document.getElementById('password').value;
+
+      try {
+        const { user } = await signIn(email, password);
+        const role = user.app_metadata?.role || 'student';
+        window.location.href =
+          role === 'admin' ? 'admin.html' :
+          role === 'teacher' ? 'teach.html' : 'learn.html';
+      } catch (ex) {
+        err.textContent = ex.message;
+        err.hidden = false;
+      }
+    });
+  </script>
+</body>
+</html>
