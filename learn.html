@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ClassroomGuard — Lesson</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="container">
+    <h1>Today's lesson</h1>
+    <p id="whoami" style="margin-bottom:16px;">Loading…</p>
+    <div class="card">
+      <p>Your teacher can see your open tabs. Stay on task.</p>
+    </div>
+  </div>
+
+  <!-- Fullscreen escape overlay -->
+  <div id="fsOverlay" class="overlay" hidden>
+    <h2>You left fullscreen mode</h2>
+    <p>Please return to fullscreen to continue the lesson.</p>
+    <button id="fsReturn">Return to fullscreen</button>
+  </div>
+
+  <!-- Teacher lock overlay -->
+  <div id="lockOverlay" class="overlay" hidden>
+    <h2>Focus mode</h2>
+    <p id="lockMsg">Return to the lesson.</p>
+  </div>
+
+  <script type="module" src="js/learn.js"></script>
+</body>
+</html>
