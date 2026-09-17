@@ -7,8 +7,9 @@
   "background": { "service_worker": "background.js" },
   "content_scripts": [
     {
-      "matches": ["http://localhost:*/*", "https://*.yourdomain.com/*"],
-      "js": ["content.js"]
+      "matches": ["http://localhost:*/*", "https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
     }
   ]
 }
