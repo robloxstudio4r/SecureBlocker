@@ -260,9 +260,11 @@ async function onExtensionMessage(event) {
 
   const tabs = msg.tabs || [];
   try {
-    await supabase.from('tab_snapshots').delete().eq('session_id', session.id);
+    const del = await supabase.from('tab_snapshots').delete().eq('session_id', session.id);
+    if (del.error) console.error('[learn] tab_snapshots delete failed:', del.error);
+
     if (tabs.length) {
-      await supabase.from('tab_snapshots').insert(tabs.map(t => ({
+      const ins = await supabase.from('tab_snapshots').insert(tabs.map(t => ({
         session_id: session.id,
         student_id: user.id,
         tab_id: t.id,
@@ -271,10 +273,12 @@ async function onExtensionMessage(event) {
         favicon_url: t.favicon || '',
         active: !!t.active
       })));
+      if (ins.error) console.error('[learn] tab_snapshots insert failed:', ins.error);
     }
-    await supabase.from('sessions')
+    const upd = await supabase.from('sessions')
       .update({ extension_connected: true })
       .eq('id', session.id);
+    if (upd.error) console.error('[learn] extension_connected update failed:', upd.error);
   } catch (e) {
     console.warn('[learn] tab sync failed', e);
   }
@@ -285,12 +289,16 @@ async function onExtensionMessage(event) {
 // =================================================================
 function startHeartbeat() {
   if (heartbeatTimer) clearInterval(heartbeatTimer);
-  heartbeatTimer = setInterval(() => {
+  heartbeatTimer = setInterval(async () => {
     if (!session) return;
-    supabase.from('sessions').update({
+    const { error } = await supabase.from('sessions').update({
       last_seen_at: new Date().toISOString(),
       focus_state: document.visibilityState === 'visible' ? 'focused' : 'hidden'
-    }).eq('id', session.id).then(() => {});
+    }).eq('id', session.id);
+    // If this silently fails (e.g. a missing RLS UPDATE policy),
+    // last_seen_at freezes forever and the roster shows the
+    // student as stale no matter how long they keep sharing.
+    if (error) console.error('[learn] heartbeat update failed:', error);
   }, 15000);
 }
 
