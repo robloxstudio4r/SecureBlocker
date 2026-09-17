@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ClassroomGuard — Classes</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <style>
+    .layout { display: grid; grid-template-columns: 260px 1fr; gap: 20px; }
+    .class-list { background: #fff; border: 1px solid #e5e5e5; border-radius: 10px; padding: 12px; }
+    .class-item {
+      padding: 10px 12px; border-radius: 8px; cursor: pointer;
+      display: flex; justify-content: space-between; align-items: center;
+      font-size: 14px;
+    }
+    .class-item:hover { background: #f4f4f5; }
+    .class-item.active { background: #111; color: #fff; }
+    .class-item .count { font-size: 11px; opacity: .7; }
+    .member-row {
+      display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+      background: #fafafa; border-radius: 8px; margin-bottom: 6px; font-size: 13px;
+    }
+    .member-row .grow { flex: 1; }
+    .pending { color: #b45309; font-size: 11px; font-weight: 600; }
+    .add-row { display: flex; gap: 8px; margin-bottom: 16px; }
+    .add-row input { margin: 0; flex: 1; }
+    .add-row button { white-space: nowrap; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="row between" style="margin-bottom:20px;">
+      <h1>Classes</h1>
+      <div class="row">
+        <a href="teach.html" class="link">Roster</a>
+        <a href="admin.html" class="link" id="adminLink" hidden>Admin</a>
+        <button id="logout" class="btn-sm btn-gray">Sign out</button>
+      </div>
+    </div>
+
+    <div class="layout">
+      <div>
+        <div class="class-list" id="classList"></div>
+        <button id="newClassBtn" class="btn-sm" style="width:100%; margin-top:10px; padding:10px;">
+          + New class
+        </button>
+      </div>
+
+      <div id="main">
+        <div class="card" id="emptyState">
+          <p>Select a class on the left, or create a new one.</p>
+        </div>
+
+        <div id="classDetail" hidden>
+          <div class="card">
+            <div class="row between">
+              <h2 id="className">—</h2>
+              <button id="deleteClass" class="btn-sm btn-red">Delete class</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3 style="margin-bottom:10px;">Add student by email</h3>
+            <div class="add-row">
+              <input type="email" id="addEmail" placeholder="student@example.com" />
+              <button id="addBtn" class="btn-blue">Add</button>
+            </div>
+            <p class="error" id="addErr" hidden></p>
+            <p style="font-size:12px;color:#888;">
+              If the email hasn't signed up yet, they'll join automatically
+              the moment they create their account.
+            </p>
+          </div>
+
+          <div class="card">
+            <h3 style="margin-bottom:10px;">Members</h3>
+            <div id="members"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="js/classes.js"></script>
+</body>
+</html>
