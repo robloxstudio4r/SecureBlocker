@@ -76,7 +76,8 @@ async function createClass() {
 
 async function deleteClass(id) {
   if (!confirm('Delete this class and remove all its members?')) return;
-  await supabase.from('classes').delete().eq('id', id);
+  const { error } = await supabase.from('classes').delete().eq('id', id);
+  if (error) { alert('Could not delete class: ' + error.message); return; }
   if (activeClassId === id) activeClassId = null;
   await load();
 }
@@ -129,15 +130,17 @@ async function addByEmail(email) {
 
 async function removeMember(studentId) {
   if (!confirm('Remove this student from the class?')) return;
-  await supabase.from('class_members')
+  const { error } = await supabase.from('class_members')
     .delete()
     .eq('class_id', activeClassId)
     .eq('student_id', studentId);
+  if (error) { alert('Could not remove student: ' + error.message); return; }
   await load();
 }
 
 async function removeInvite(id) {
-  await supabase.from('class_invites').delete().eq('id', id);
+  const { error } = await supabase.from('class_invites').delete().eq('id', id);
+  if (error) { alert('Could not cancel invite: ' + error.message); return; }
   await load();
 }
 
