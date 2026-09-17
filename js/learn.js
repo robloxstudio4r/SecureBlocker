@@ -118,6 +118,7 @@ document.getElementById('shareResume').addEventListener('click', async () => {
     });
     document.getElementById('shareOverlay').hidden = true;
     startCapture();
+    startShareWatcher();
   } catch (e) {
     console.warn('[learn] resume denied:', e);
   }
@@ -201,21 +202,51 @@ async function captureFrame() {
 }
 
 // =================================================================
-// 4) SHARE WATCHER — poll track readyState, ignore flaky events
+// 4) SHARE WATCHER — listen for the real 'ended' event, with a
+// debounced poll as a safety net (some browsers/OS combos can
+// transiently misreport readyState for a moment without the
+// share having actually stopped, so we require 2 consecutive
+// stale reads before trusting the poll).
 // =================================================================
+let shareWatchedTrack = null;
+let staleReads = 0;
+
+function onTrackEnded() {
+  console.log('[learn] screen share track ended');
+  showShareOverlay();
+}
+
+function showShareOverlay() {
+  document.getElementById('shareOverlay').hidden = false;
+  stopCapture();
+  if (shareWatchTimer) { clearInterval(shareWatchTimer); shareWatchTimer = null; }
+  if (shareWatchedTrack) {
+    shareWatchedTrack.removeEventListener('ended', onTrackEnded);
+    shareWatchedTrack = null;
+  }
+}
+
 function startShareWatcher() {
   if (shareWatchTimer) clearInterval(shareWatchTimer);
+  if (shareWatchedTrack) shareWatchedTrack.removeEventListener('ended', onTrackEnded);
+  staleReads = 0;
 
+  const track = mediaStream?.getVideoTracks()[0];
+  if (!track) return;
+
+  // Primary signal: the real, authoritative 'ended' event.
+  shareWatchedTrack = track;
+  track.addEventListener('ended', onTrackEnded);
+
+  // Backup poll, debounced so a single flaky read doesn't false-trigger.
   shareWatchTimer = setInterval(() => {
     if (!mediaStream) return;
-    const track = mediaStream.getVideoTracks()[0];
-
-    // If track is gone or genuinely ended, show the resume overlay
-    if (!track || track.readyState === 'ended') {
-      document.getElementById('shareOverlay').hidden = false;
-      stopCapture();
-      clearInterval(shareWatchTimer);
-      shareWatchTimer = null;
+    const t = mediaStream.getVideoTracks()[0];
+    if (!t || t.readyState === 'ended') {
+      staleReads++;
+      if (staleReads >= 2) showShareOverlay();
+    } else {
+      staleReads = 0;
     }
   }, 2000);
 }
