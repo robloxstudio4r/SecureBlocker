@@ -52,8 +52,9 @@ async function load() {
 
   sessionsMap.clear();
   for (const s of sessRes.data ?? []) {
-    const age = Date.now() - toDate(s.last_seen_at)?.getTime();
-    if (age > 180000) continue;
+    // Staleness filtering disabled: show every open session regardless
+    // of how long ago last_seen_at was. timeAgo() still shows the age
+    // in the UI so you can tell at a glance if a row looks dead.
     sessionsMap.set(s.id, s);
   }
 
@@ -76,12 +77,6 @@ supabase.channel('admin-stream')
     (p) => {
       if (p.eventType === 'DELETE' || p.new?.ended_at) {
         sessionsMap.delete(p.new?.id ?? p.old.id);
-        render();
-        return;
-      }
-      const age = Date.now() - toDate(p.new.last_seen_at)?.getTime();
-      if (age > 180000) {
-        sessionsMap.delete(p.new.id);
         render();
         return;
       }
@@ -109,17 +104,8 @@ supabase.channel('admin-stream')
     })
   .subscribe();
 
-setInterval(() => {
-  let changed = false;
-  const cutoff = Date.now() - 180000;
-  for (const [id, s] of sessionsMap) {
-    if (toDate(s.last_seen_at)?.getTime() < cutoff) {
-      sessionsMap.delete(id);
-      changed = true;
-    }
-  }
-  if (changed) render();
-}, 30000);
+// Periodic staleness sweep disabled per request -- sessions are only
+// ever removed when ended_at is set or the row is deleted.
 
 // =================================================================
 // ACTIONS
