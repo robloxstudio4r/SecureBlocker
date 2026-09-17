@@ -8,6 +8,18 @@ const role = authSession.user.app_metadata?.role;
 if (role === 'admin') document.getElementById('adminLink').hidden = false;
 document.getElementById('logout').addEventListener('click', signOut);
 
+// Postgres can return timestamps without a timezone suffix (e.g. a
+// `timestamp` column instead of `timestamptz`). JS parses a date-time
+// string with no offset as LOCAL time, not UTC -- which silently shifts
+// every "age" calculation by the browser's UTC offset and can make a
+// session that updated one second ago look hours stale. Force UTC
+// whenever the string doesn't already specify a zone.
+function toDate(iso) {
+  if (!iso) return null;
+  const hasTZ = /[Zz]|[+-]\d\d:?\d\d$/.test(iso);
+  return new Date(hasTZ ? iso : iso + 'Z');
+}
+
 const sessionsMap = new Map();
 const tabsMap = new Map();
 const loadedScreenshots = new Map();
@@ -35,7 +47,7 @@ async function load() {
   sessionsMap.clear();
   const cutoff = Date.now() - 180000;
   for (const s of sessions ?? []) {
-    const age = Date.now() - new Date(s.last_seen_at).getTime();
+    const age = Date.now() - toDate(s.last_seen_at)?.getTime();
     if (age > 180000) {
       console.log('[roster] skipping stale session', s.id, 'age(ms)=', age);
       continue;
@@ -65,7 +77,7 @@ supabase.channel('teacher-stream')
         render();
         return;
       }
-      const age = Date.now() - new Date(p.new.last_seen_at).getTime();
+      const age = Date.now() - toDate(p.new.last_seen_at)?.getTime();
       if (age > 180000) {
         sessionsMap.delete(p.new.id);
         render();
@@ -94,7 +106,7 @@ setInterval(() => {
   let changed = false;
   const cutoff = Date.now() - 180000;
   for (const [id, s] of sessionsMap) {
-    if (new Date(s.last_seen_at).getTime() < cutoff) {
+    if (toDate(s.last_seen_at)?.getTime() < cutoff) {
       sessionsMap.delete(id);
       changed = true;
     }
@@ -148,7 +160,7 @@ async function unlock(id) {
 // =================================================================
 function timeAgo(iso) {
   if (!iso) return 'never';
-  const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  const s = Math.floor((Date.now() - toDate(iso)?.getTime()) / 1000);
   if (s < 60) return `${s}s ago`;
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   return `${Math.floor(s / 3600)}h ago`;
@@ -159,7 +171,7 @@ function esc(str) {
 }
 function isLive(iso) {
   if (!iso) return false;
-  return (Date.now() - new Date(iso).getTime()) < 10000;
+  return (Date.now() - toDate(iso)?.getTime()) < 10000;
 }
 
 // =================================================================
@@ -172,7 +184,7 @@ async function refreshScreenshots() {
     const session = sessionsMap.get(sid);
     if (!session?.last_screenshot_at) continue;
 
-    const ageMs = Date.now() - new Date(session.last_screenshot_at).getTime();
+    const ageMs = Date.now() - toDate(session.last_screenshot_at)?.getTime();
     const live = ageMs < 10000;
 
     const wrap = img.closest('.screen-wrap');
