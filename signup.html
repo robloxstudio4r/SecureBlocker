@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ClassroomGuard — Sign up</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="card auth-card">
+    <h1>Create account</h1>
+    <p style="margin-bottom:20px;">Students sign up here.</p>
+
+    <form id="signupForm">
+      <input type="text" id="fullName" placeholder="Full name" required />
+      <input type="email" id="email" placeholder="Email" required />
+      <input type="password" id="password" placeholder="Password (min 6 chars)" minlength="6" required />
+      <p class="error" id="err" hidden></p>
+      <p class="error" id="ok" hidden style="color:#16a34a;"></p>
+      <button type="submit" style="width:100%;">Sign up</button>
+    </form>
+
+    <p style="margin-top:16px; text-align:center; font-size:14px;">
+      Have an account? <a href="index.html" class="link">Sign in</a>
+    </p>
+  </div>
+
+  <script type="module">
+    import { signUp } from './js/auth.js';
+
+    document.getElementById('signupForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const err = document.getElementById('err');
+      const ok = document.getElementById('ok');
+      err.hidden = true; ok.hidden = true;
+
+      const fullName = document.getElementById('fullName').value.trim();
+      const email = document.getElementById('email').value.trim();
+      const password = document.getElementById('password').value;
+
+      try {
+        await signUp(email, password, fullName);
+        ok.textContent = 'Account created. Check your email to confirm, then sign in.';
+        ok.hidden = false;
+        document.getElementById('signupForm').reset();
+      } catch (ex) {
+        err.textContent = ex.message;
+        err.hidden = false;
+      }
+    });
+  </script>
+</body>
+</html>
