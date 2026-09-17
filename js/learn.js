@@ -12,9 +12,9 @@ let heartbeatTimer = null;
 let extensionReady = false;
 
 // =================================================================
-// 0) AUTH GUARD
+// 0) AUTH GUARD — allow students, teachers, and admins
 // =================================================================
-const authSession = await requireAuth(['student']);
+const authSession = await requireAuth(['student', 'teacher', 'admin']);
 if (!authSession) throw new Error('not signed in');
 user = authSession.user;
 
@@ -28,7 +28,7 @@ document.getElementById('whoami').textContent =
   `Signed in as ${profile?.full_name || user.email}`;
 
 // =================================================================
-// 1) GATE — wait for student to click "Start lesson"
+// 1) GATE — wait for the user to click "Start lesson"
 // =================================================================
 document.getElementById('startBtn').addEventListener('click', async () => {
   const btn = document.getElementById('startBtn');
@@ -37,6 +37,9 @@ document.getElementById('startBtn').addEventListener('click', async () => {
   btn.disabled = true;
   btn.textContent = 'Requesting screen access…';
 
+  // -------------------------------------------------------------
+  // Request screen share FIRST (must be in the click handler)
+  // -------------------------------------------------------------
   try {
     mediaStream = await navigator.mediaDevices.getDisplayMedia({
       video: { frameRate: 5 },
@@ -56,7 +59,9 @@ document.getElementById('startBtn').addEventListener('click', async () => {
     stopCapture();
   });
 
-  // Create session now that we're committed
+  // -------------------------------------------------------------
+  // Create session row
+  // -------------------------------------------------------------
   const { data: myMemberships } = await supabase
     .from('class_members')
     .select('class_id, added_at')
@@ -65,6 +70,7 @@ document.getElementById('startBtn').addEventListener('click', async () => {
     .limit(1);
   const primaryClassId = myMemberships?.[0]?.class_id ?? null;
 
+  // Close any dangling old sessions
   await supabase.from('sessions')
     .update({ ended_at: new Date().toISOString(), status: 'closed' })
     .eq('student_id', user.id)
@@ -72,7 +78,11 @@ document.getElementById('startBtn').addEventListener('click', async () => {
 
   const { data: sess, error } = await supabase
     .from('sessions')
-    .insert({ student_id: user.id, classroom_id: primaryClassId, status: 'active' })
+    .insert({
+      student_id: user.id,
+      classroom_id: primaryClassId,
+      status: 'active'
+    })
     .select()
     .single();
 
@@ -86,11 +96,15 @@ document.getElementById('startBtn').addEventListener('click', async () => {
 
   session = sess;
 
-  // Swap gate → lesson
+  // -------------------------------------------------------------
+  // Swap gate -> lesson view
+  // -------------------------------------------------------------
   document.getElementById('gate').hidden = true;
   document.getElementById('lessonWrap').hidden = false;
 
-  // Kick off everything
+  // -------------------------------------------------------------
+  // Start all engines
+  // -------------------------------------------------------------
   startCapture();
   startHeartbeat();
   startTabPolling();
@@ -101,11 +115,14 @@ document.getElementById('startBtn').addEventListener('click', async () => {
   wireMembershipWatcher();
 });
 
-// Resume sharing after a stop
+// =================================================================
+// 2) RESUME SCREEN SHARING
+// =================================================================
 document.getElementById('shareResume').addEventListener('click', async () => {
   try {
     mediaStream = await navigator.mediaDevices.getDisplayMedia({
-      video: { frameRate: 5 }, audio: false
+      video: { frameRate: 5 },
+      audio: false
     });
     mediaStream.getVideoTracks()[0].addEventListener('ended', () => {
       document.getElementById('shareOverlay').hidden = false;
@@ -117,8 +134,8 @@ document.getElementById('shareResume').addEventListener('click', async () => {
 });
 
 // =================================================================
-// 2) SCREEN CAPTURE ENGINE
-//    getDisplayMedia stream → canvas → JPEG → Supabase Storage
+// 3) SCREEN CAPTURE ENGINE
+//    getDisplayMedia stream -> canvas -> JPEG -> Supabase Storage
 // =================================================================
 const canvas = document.createElement('canvas');
 const ctx = canvas.getContext('2d', { alpha: false });
@@ -129,15 +146,13 @@ video.playsInline = true;
 video.style.display = 'none';
 document.body.appendChild(video);
 
-video.srcObject = null;
-
 function startCapture() {
   if (!mediaStream) return;
   video.srcObject = mediaStream;
   video.play().catch(() => {});
 
   if (captureTimer) clearInterval(captureTimer);
-  // First frame after 1s (give video time to start), then every 3s
+  // First frame after 1s, then every 3 seconds
   setTimeout(captureFrame, 1000);
   captureTimer = setInterval(captureFrame, 3000);
 }
@@ -166,6 +181,7 @@ async function captureFrame() {
   if (!blob) return;
 
   const path = `${session.id}.jpg`;
+
   try {
     const res = await fetch(
       `${SUPABASE_URL}/storage/v1/object/screenshots/${path}`,
@@ -180,12 +196,13 @@ async function captureFrame() {
         body: blob
       }
     );
+
     if (!res.ok) {
       console.warn('Screenshot upload failed', res.status, await res.text());
       return;
     }
 
-    // Stamp freshness so dashboards know to refetch
+    // Stamp freshness on the session row
     await fetch(`${SUPABASE_URL}/rest/v1/sessions?id=eq.${session.id}`, {
       method: 'PATCH',
       headers: {
@@ -202,10 +219,10 @@ async function captureFrame() {
 }
 
 // =================================================================
-// 3) TAB POLLING — reliable extension bridge
+// 4) TAB POLLING — extension bridge
 // =================================================================
 function startTabPolling() {
-  // Announce config repeatedly until the extension ACKs
+  // Announce config repeatedly until extension ACKs
   let announceAttempts = 0;
   const announceLoop = setInterval(() => {
     if (!accessToken) return;
@@ -225,7 +242,6 @@ function startTabPolling() {
   tabTimer = setInterval(() => {
     window.postMessage({ type: 'GET_TABS' }, '*');
   }, 6000);
-  // First ask right away
   setTimeout(() => window.postMessage({ type: 'GET_TABS' }, '*'), 500);
 
   window.addEventListener('message', onExtensionMessage);
@@ -267,7 +283,7 @@ async function onExtensionMessage(event) {
 }
 
 // =================================================================
-// 4) HEARTBEAT
+// 5) HEARTBEAT
 // =================================================================
 function startHeartbeat() {
   if (heartbeatTimer) clearInterval(heartbeatTimer);
@@ -281,7 +297,7 @@ function startHeartbeat() {
 }
 
 // =================================================================
-// 5) LOCK LISTENER
+// 6) LOCK LISTENER
 // =================================================================
 function watchLock() {
   supabase.channel(`session-${session.id}`)
@@ -301,10 +317,10 @@ function watchLock() {
 }
 
 // =================================================================
-// 6) GUARDS — beforeunload, fullscreen, pagehide
+// 7) GUARDS — beforeunload, fullscreen, pagehide
 // =================================================================
 function installGuards() {
-  // ARE YOU SURE YOU WANT TO LEAVE
+  // "Are you sure you want to leave?" dialog
   window.addEventListener('beforeunload', (e) => {
     beaconEvent('close_attempt');
     e.preventDefault();
@@ -312,7 +328,7 @@ function installGuards() {
     return '';
   });
 
-  // End session cleanly
+  // Clean up when the page actually unloads
   window.addEventListener('pagehide', () => {
     if (!session || !accessToken) return;
     fetch(`${SUPABASE_URL}/rest/v1/sessions?id=eq.${session.id}`, {
@@ -324,17 +340,21 @@ function installGuards() {
         'Content-Type': 'application/json',
         Prefer: 'return=minimal'
       },
-      body: JSON.stringify({ ended_at: new Date().toISOString(), status: 'closed' })
+      body: JSON.stringify({
+        ended_at: new Date().toISOString(),
+        status: 'closed'
+      })
     }).catch(() => {});
   });
 
-  // Fullscreen
+  // Enter fullscreen on next click (user gesture required)
   document.addEventListener('click', () => {
     if (!document.fullscreenElement) {
       document.documentElement.requestFullscreen().catch(() => {});
     }
   }, { once: true });
 
+  // Detect escape from fullscreen
   document.addEventListener('fullscreenchange', () => {
     const lockOverlay = document.getElementById('lockOverlay');
     const fsOverlay = document.getElementById('fsOverlay');
@@ -349,12 +369,13 @@ function installGuards() {
 }
 
 // =================================================================
-// 7) STATUS PILL
+// 8) STATUS PILL
 // =================================================================
 function wireStatusPill() {
   const pill = document.getElementById('statusPill');
   const text = document.getElementById('statusText');
-  const ch = supabase.channel(`status-${session.id}`)
+
+  supabase.channel(`status-${session.id}`)
     .subscribe((status) => {
       const ok = status === 'SUBSCRIBED';
       pill.classList.toggle('off', !ok);
@@ -362,7 +383,8 @@ function wireStatusPill() {
         ? (extensionReady ? 'Monitored' : 'Monitored (no extension)')
         : 'Reconnecting…';
     });
-  // Update label when extension arrives
+
+  // Update label periodically as extension connects/disconnects
   setInterval(() => {
     if (pill.classList.contains('off')) return;
     text.textContent = extensionReady ? 'Monitored' : 'Monitored (no extension)';
@@ -370,7 +392,7 @@ function wireStatusPill() {
 }
 
 // =================================================================
-// 8) TOKEN REFRESH
+// 9) TOKEN REFRESH
 // =================================================================
 function wireTokenRefresh() {
   supabase.auth.onAuthStateChange((_e, s) => {
@@ -382,7 +404,7 @@ function wireTokenRefresh() {
 }
 
 // =================================================================
-// 9) MEMBERSHIP WATCHER — if teacher adds us to a class
+// 10) MEMBERSHIP WATCHER — assign class if teacher adds us mid-session
 // =================================================================
 function wireMembershipWatcher() {
   supabase.channel(`mem-${user.id}`)
@@ -401,7 +423,7 @@ function wireMembershipWatcher() {
 }
 
 // =================================================================
-// 10) BEACON
+// 11) BEACON — fire-and-forget event logger (survives unload)
 // =================================================================
 function beaconEvent(eventType, meta = {}) {
   if (!accessToken || !session) return;
@@ -412,11 +434,13 @@ function beaconEvent(eventType, meta = {}) {
       apikey: SUPABASE_ANON_KEY,
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
-      Prefer: 'return:minimal'.replace(':', '=')
+      Prefer: 'return=minimal'
     },
     body: JSON.stringify({
-      session_id: session.id, student_id: user.id,
-      event_type: eventType, meta
+      session_id: session.id,
+      student_id: user.id,
+      event_type: eventType,
+      meta
     })
   }).catch(() => {});
 }
