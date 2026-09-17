@@ -35,11 +35,13 @@ function render(users) {
         body: { userId: id, role: newRole }
       });
       if (error) { alert(error.message); return; }
-      await supabase.from('profiles').update({ role: newRole }).eq('id', id);
+      const { error: profErr } = await supabase.from('profiles').update({ role: newRole }).eq('id', id);
+      if (profErr) { console.error('[admin-users] profiles.role update failed:', profErr); alert(profErr.message); }
     });
     tr.querySelector('.classroom').addEventListener('blur', async (e) => {
       const v = e.target.value.trim();
-      await supabase.from('profiles').update({ classroom_id: v || null }).eq('id', id);
+      const { error } = await supabase.from('profiles').update({ classroom_id: v || null }).eq('id', id);
+      if (error) { console.error('[admin-users] classroom update failed:', error); alert(error.message); }
     });
   });
 }
