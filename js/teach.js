@@ -11,10 +11,11 @@ document.getElementById('logout').addEventListener('click', signOut);
 const sessionsMap = new Map();
 const tabsMap = new Map();          // sessionId -> tab[]
 const loadedScreenshots = new Map(); // sessionId -> last_screenshot_at
+let modalOpen = false;
 
-// -----------------------------------------------------------------
+// =================================================================
 // LOAD
-// -----------------------------------------------------------------
+// =================================================================
 async function load() {
   const { data: sessions } = await supabase
     .from('sessions')
@@ -34,9 +35,9 @@ async function load() {
   render();
 }
 
-// -----------------------------------------------------------------
+// =================================================================
 // REALTIME
-// -----------------------------------------------------------------
+// =================================================================
 supabase.channel('teacher-stream')
   .on('postgres_changes', { event: '*', schema: 'public', table: 'sessions' },
     (p) => {
@@ -60,9 +61,9 @@ supabase.channel('teacher-stream')
     })
   .subscribe();
 
-// -----------------------------------------------------------------
+// =================================================================
 // ACTIONS
-// -----------------------------------------------------------------
+// =================================================================
 async function closeTab(sessionId, studentId, tabId, url) {
   let domain = '';
   try { domain = new URL(url).hostname; } catch {}
@@ -71,26 +72,22 @@ async function closeTab(sessionId, studentId, tabId, url) {
     command: 'close', tab_id: tabId, domain
   });
 }
-
 async function closeAll(sessionId, studentId) {
   const list = tabsMap.get(sessionId) ?? [];
   for (const t of list) await closeTab(sessionId, studentId, t.tab_id, t.url);
 }
-
 async function focusTab(sessionId, studentId, tabId) {
   await supabase.from('tab_commands').insert({
     target_session_id: sessionId, target_student_id: studentId,
     command: 'focus', tab_id: tabId
   });
 }
-
 async function requestScreenshot(sessionId, studentId) {
   await supabase.from('tab_commands').insert({
     target_session_id: sessionId, target_student_id: studentId,
     command: 'screenshot'
   });
 }
-
 async function lock(id) {
   await supabase.from('sessions').update({
     status: 'locked', lock_message: 'Focus on the lesson.'
@@ -100,28 +97,54 @@ async function unlock(id) {
   await supabase.from('sessions').update({ status: 'active' }).eq('id', id);
 }
 
-// -----------------------------------------------------------------
+// =================================================================
 // HELPERS
-// -----------------------------------------------------------------
+// =================================================================
 function timeAgo(iso) {
   if (!iso) return 'never';
   const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
   if (s < 60) return `${s}s ago`;
-  if (s < 3600) return `${Math.floor(s/60)}m ago`;
-  return `${Math.floor(s/3600)}h ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  return `${Math.floor(s / 3600)}h ago`;
 }
-
 function esc(str) {
   return String(str ?? '').replace(/[&<>"']/g, c =>
-    ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function isLive(iso) {
+  if (!iso) return false;
+  return (Date.now() - new Date(iso).getTime()) < 10000;
 }
 
+// =================================================================
+// LIVE SCREENSHOT REFRESH
+// =================================================================
 async function refreshScreenshots() {
   const imgs = document.querySelectorAll('.screenshot[data-sid]');
   for (const img of imgs) {
     const sid = img.dataset.sid;
     const session = sessionsMap.get(sid);
     if (!session?.last_screenshot_at) continue;
+
+    const ageMs = Date.now() - new Date(session.last_screenshot_at).getTime();
+    const live = ageMs < 10000;
+
+    // Update the badge
+    const wrap = img.closest('.screen-wrap');
+    if (wrap) {
+      const badge = wrap.querySelector('.badge');
+      if (badge) {
+        badge.textContent = live
+          ? '🔴 LIVE'
+          : `Screen · ${timeAgo(session.last_screenshot_at)}`;
+        badge.style.background = live
+          ? 'rgba(220,38,38,.9)'
+          : 'rgba(0,0,0,.75)';
+      }
+    }
+
+    // Only refetch if file changed AND recent enough to still exist
+    if (ageMs > 120000) continue;
     if (loadedScreenshots.get(sid) === session.last_screenshot_at) continue;
 
     const { data, error } = await supabase.storage
@@ -129,31 +152,53 @@ async function refreshScreenshots() {
       .createSignedUrl(`${sid}.jpg`, 600);
 
     if (!error && data?.signedUrl) {
-      img.src = data.signedUrl;
+      img.src = `${data.signedUrl}&t=${Date.now()}`;
       loadedScreenshots.set(sid, session.last_screenshot_at);
     }
   }
 }
 
+// Fast loop: 4 seconds — enough to feel live without hammering
+setInterval(refreshScreenshots, 4000);
+
+// =================================================================
+// FULLSCREEN PREVIEW MODAL
+// =================================================================
 function openModal(src, alt) {
+  if (modalOpen) return;
+  modalOpen = true;
+
   const div = document.createElement('div');
   div.className = 'screen-modal';
   div.innerHTML = `<img src="${src}" alt="${esc(alt)}" />`;
-  div.addEventListener('click', () => div.remove());
+
+  const close = () => {
+    div.remove();
+    modalOpen = false;
+    document.removeEventListener('keydown', onEsc);
+  };
+  const onEsc = (e) => { if (e.key === 'Escape') close(); };
+
+  div.addEventListener('click', close);
+  document.addEventListener('keydown', onEsc);
   document.body.appendChild(div);
 }
 
-// -----------------------------------------------------------------
+// =================================================================
 // RENDER
-// -----------------------------------------------------------------
+// =================================================================
 function render() {
   const host = document.getElementById('roster');
   const sessions = Array.from(sessionsMap.values());
 
   if (!sessions.length) {
-    host.innerHTML = '<p>No active students.</p>';
+    host.innerHTML = '<p style="color:#888;">No active students.</p>';
     return;
   }
+
+  // Preserve scroll position across re-renders
+  const scrollY = window.scrollY;
+  const modalWasOpen = modalOpen;
 
   host.innerHTML = sessions.map(s => {
     const tabs = tabsMap.get(s.id) ?? [];
@@ -165,25 +210,27 @@ function render() {
       ? `<button class="btn-sm btn-green" data-act="unlock" data-id="${s.id}">Unlock</button>`
       : `<button class="btn-sm btn-yellow" data-act="lock" data-id="${s.id}">Lock</button>`;
 
+    const live = isLive(s.last_screenshot_at);
     const screenHtml = s.last_screenshot_at
-      ? `<div class="screen-wrap" data-src-sid="${s.id}">
-           <span class="badge">Screen · ${timeAgo(s.last_screenshot_at)}</span>
-           <img class="screenshot" data-sid="${s.id}" alt="Screen of ${esc(name)}" />
+      ? `<div class="screen-wrap">
+           <span class="badge" style="background:${live ? 'rgba(220,38,38,.9)' : 'rgba(0,0,0,.75)'}">
+             ${live ? '🔴 LIVE' : `Screen · ${timeAgo(s.last_screenshot_at)}`}
+           </span>
+           <img class="screenshot" data-sid="${s.id}" alt="Screen of ${esc(name)}"
+                style="background:#111;" />
          </div>`
-      : `<div class="screen-empty">No screenshot yet — the extension sends one every 30s</div>`;
+      : `<div class="screen-empty">Waiting for screen share…</div>`;
 
     const currentHtml = current ? `
-      <div style="margin-bottom:8px;">
-        <p style="font-size:11px;color:#666;margin-bottom:4px;">CURRENT TAB</p>
-        <div class="tab-row current">
-          ${current.favicon_url ? `<img src="${esc(current.favicon_url)}" />` : ''}
-          <span class="title">${esc(current.title || current.url)}</span>
-          <span class="url">${esc(current.url)}</span>
-        </div>
+      <p style="font-size:11px;color:#666;margin:0 0 4px;">CURRENT TAB</p>
+      <div class="tab-row current">
+        ${current.favicon_url ? `<img src="${esc(current.favicon_url)}" />` : ''}
+        <span class="title">${esc(current.title || current.url)}</span>
+        <span class="url">${esc(current.url)}</span>
       </div>` : '';
 
     const othersHtml = others.length ? `
-      <p style="font-size:11px;color:#666;margin:8px 0 4px;">OTHER OPEN TABS (${others.length})</p>
+      <p style="font-size:11px;color:#666;margin:10px 0 4px;">OTHER OPEN TABS (${others.length})</p>
       ${others.map(t => `
         <div class="tab-row">
           ${t.favicon_url ? `<img src="${esc(t.favicon_url)}" />` : ''}
@@ -195,11 +242,10 @@ function render() {
           <button class="btn-sm btn-red" data-act="close-tab"
             data-sid="${s.id}" data-uid="${s.student_id}"
             data-tid="${t.tab_id}" data-url="${esc(t.url)}">Close</button>
-        </div>`).join('')}
-    ` : '';
+        </div>`).join('')}` : '';
 
     return `
-      <div class="card">
+      <div class="card" data-session="${s.id}">
         <div class="row between" style="margin-bottom:12px;">
           <div>
             <strong>${esc(name)}</strong>
@@ -211,7 +257,7 @@ function render() {
           <div class="row">
             ${lockBtn}
             <button class="btn-sm btn-blue" data-act="screenshot"
-              data-sid="${s.id}" data-uid="${s.student_id}">Capture now</button>
+              data-sid="${s.id}" data-uid="${s.student_id}">Refresh now</button>
             <button class="btn-sm btn-red" data-act="close-all"
               data-sid="${s.id}" data-uid="${s.student_id}">Close all</button>
           </div>
@@ -223,27 +269,27 @@ function render() {
             ${othersHtml}
             ${!tabs.length ? '<p style="font-size:12px;color:#999;">No tabs reported yet.</p>' : ''}
           </div>
-          <div>
-            ${screenHtml}
-          </div>
+          <div>${screenHtml}</div>
         </div>
       </div>`;
   }).join('');
 
+  // Wire buttons
   host.querySelectorAll('button[data-act]').forEach(btn => {
     btn.addEventListener('click', async () => {
       const a = btn.dataset.act;
-      if (a === 'lock')           await lock(btn.dataset.id);
-      if (a === 'unlock')         await unlock(btn.dataset.id);
-      if (a === 'close-tab')      await closeTab(btn.dataset.sid, btn.dataset.uid,
-                                                 Number(btn.dataset.tid), btn.dataset.url);
-      if (a === 'focus-tab')      await focusTab(btn.dataset.sid, btn.dataset.uid,
-                                                 Number(btn.dataset.tid));
-      if (a === 'close-all')      await closeAll(btn.dataset.sid, btn.dataset.uid);
-      if (a === 'screenshot')     await requestScreenshot(btn.dataset.sid, btn.dataset.uid);
+      if (a === 'lock')       await lock(btn.dataset.id);
+      if (a === 'unlock')     await unlock(btn.dataset.id);
+      if (a === 'close-tab')  await closeTab(btn.dataset.sid, btn.dataset.uid,
+                                             Number(btn.dataset.tid), btn.dataset.url);
+      if (a === 'focus-tab')  await focusTab(btn.dataset.sid, btn.dataset.uid,
+                                             Number(btn.dataset.tid));
+      if (a === 'close-all')  await closeAll(btn.dataset.sid, btn.dataset.uid);
+      if (a === 'screenshot') await requestScreenshot(btn.dataset.sid, btn.dataset.uid);
     });
   });
 
+  // Wire screen preview clicks
   host.querySelectorAll('.screen-wrap').forEach(wrap => {
     wrap.addEventListener('click', () => {
       const img = wrap.querySelector('img');
@@ -251,10 +297,14 @@ function render() {
     });
   });
 
+  // Restore scroll
+  window.scrollTo(0, scrollY);
+
+  // Kick off image loads
   refreshScreenshots();
 }
 
-// Refresh screenshot URLs every 15s in case they expire
-setInterval(refreshScreenshots, 15000);
-
+// =================================================================
+// INIT
+// =================================================================
 load();
