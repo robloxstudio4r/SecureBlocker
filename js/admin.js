@@ -115,39 +115,45 @@ setInterval(() => {
 async function closeTab(sessionId, studentId, tabId, url) {
   let domain = '';
   try { domain = new URL(url).hostname; } catch {}
-  await supabase.from('tab_commands').insert({
+  const { error } = await supabase.from('tab_commands').insert({
     target_session_id: sessionId, target_student_id: studentId,
     command: 'close', tab_id: tabId, domain
   });
+  if (error) console.error('[admin] closeTab failed:', error);
 }
 async function closeAll(sessionId, studentId) {
   const list = tabsMap.get(sessionId) ?? [];
   for (const t of list) await closeTab(sessionId, studentId, t.tab_id, t.url);
 }
 async function focusTab(sessionId, studentId, tabId) {
-  await supabase.from('tab_commands').insert({
+  const { error } = await supabase.from('tab_commands').insert({
     target_session_id: sessionId, target_student_id: studentId,
     command: 'focus', tab_id: tabId
   });
+  if (error) console.error('[admin] focusTab failed:', error);
 }
 async function requestScreenshot(sessionId, studentId) {
-  await supabase.from('tab_commands').insert({
+  const { error } = await supabase.from('tab_commands').insert({
     target_session_id: sessionId, target_student_id: studentId,
     command: 'screenshot'
   });
+  if (error) console.error('[admin] requestScreenshot failed:', error);
 }
 async function lock(id) {
-  await supabase.from('sessions').update({
+  const { error } = await supabase.from('sessions').update({
     status: 'locked', lock_message: 'Focus on the lesson.'
   }).eq('id', id);
+  if (error) { console.error('[admin] lock failed:', error); alert('Could not lock: ' + error.message); }
 }
 async function unlock(id) {
-  await supabase.from('sessions').update({ status: 'active' }).eq('id', id);
+  const { error } = await supabase.from('sessions').update({ status: 'active' }).eq('id', id);
+  if (error) { console.error('[admin] unlock failed:', error); alert('Could not unlock: ' + error.message); }
 }
 async function endSession(id) {
-  await supabase.from('sessions').update({
+  const { error } = await supabase.from('sessions').update({
     ended_at: new Date().toISOString(), status: 'closed'
   }).eq('id', id);
+  if (error) { console.error('[admin] endSession failed:', error); alert('Could not end session: ' + error.message); }
 }
 
 // =================================================================
