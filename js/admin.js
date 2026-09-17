@@ -12,35 +12,47 @@ const events = [];
 let modalOpen = false;
 
 // =================================================================
-// LOAD — only sessions alive in the last 3 minutes
+// LOAD
 // =================================================================
 async function load() {
-  const cutoff = new Date(Date.now() - 180000).toISOString();
-
-  const [{ data: sessions }, { data: tabs }, { data: evs }] = await Promise.all([
+  const [sessRes, tabsRes, evsRes] = await Promise.all([
     supabase.from('sessions')
-      .select('*, profiles!sessions_student_id_fkey(email, full_name)')
+      .select('*, profiles(email, full_name)')
       .is('ended_at', null)
-      .gte('last_seen_at', cutoff)
       .order('started_at', { ascending: false }),
     supabase.from('tab_snapshots').select('*'),
     supabase.from('focus_events')
-      .select('*, profiles!focus_events_student_id_fkey(email)')
+      .select('*, profiles(email)')
       .order('occurred_at', { ascending: false })
       .limit(200)
   ]);
 
+  if (sessRes.error) {
+    console.error('[admin] sessions error:', sessRes.error);
+    document.getElementById('roster').innerHTML =
+      `<p style="color:#dc2626;">Query error: ${sessRes.error.message}</p>`;
+    return;
+  }
+  if (tabsRes.error) console.error('[admin] tabs error:', tabsRes.error);
+  if (evsRes.error) console.error('[admin] events error:', evsRes.error);
+
+  console.log('[admin] got', sessRes.data?.length ?? 0, 'open sessions');
+
   sessionsMap.clear();
-  (sessions ?? []).forEach(s => sessionsMap.set(s.id, s));
+  for (const s of sessRes.data ?? []) {
+    const age = Date.now() - new Date(s.last_seen_at).getTime();
+    if (age > 180000) continue;
+    sessionsMap.set(s.id, s);
+  }
 
   tabsMap.clear();
-  (tabs ?? []).forEach(t => {
+  for (const t of tabsRes.data ?? []) {
     if (!tabsMap.has(t.session_id)) tabsMap.set(t.session_id, []);
     tabsMap.get(t.session_id).push(t);
-  });
+  }
 
   events.length = 0;
-  events.push(...(evs ?? []));
+  events.push(...(evsRes.data ?? []));
   render();
 }
 
@@ -55,8 +67,8 @@ supabase.channel('admin-stream')
         render();
         return;
       }
-      const ageMs = Date.now() - new Date(p.new.last_seen_at).getTime();
-      if (ageMs > 180000) {
+      const age = Date.now() - new Date(p.new.last_seen_at).getTime();
+      if (age > 180000) {
         sessionsMap.delete(p.new.id);
         render();
         return;
@@ -85,7 +97,6 @@ supabase.channel('admin-stream')
     })
   .subscribe();
 
-// Sweep every 30s to hide stale sessions
 setInterval(() => {
   let changed = false;
   const cutoff = Date.now() - 180000;
@@ -200,23 +211,19 @@ async function refreshScreenshots() {
 setInterval(refreshScreenshots, 4000);
 
 // =================================================================
-// FULLSCREEN PREVIEW MODAL
+// MODAL
 // =================================================================
 function openModal(src, alt) {
   if (modalOpen) return;
   modalOpen = true;
-
   const div = document.createElement('div');
   div.className = 'screen-modal';
   div.innerHTML = `<img src="${src}" alt="${esc(alt)}" />`;
-
   const close = () => {
-    div.remove();
-    modalOpen = false;
+    div.remove(); modalOpen = false;
     document.removeEventListener('keydown', onEsc);
   };
   const onEsc = (e) => { if (e.key === 'Escape') close(); };
-
   div.addEventListener('click', close);
   document.addEventListener('keydown', onEsc);
   document.body.appendChild(div);
@@ -229,7 +236,6 @@ function render() {
   const sessions = Array.from(sessionsMap.values());
   const tabsTotal = Array.from(tabsMap.values()).reduce((a, l) => a + l.length, 0);
 
-  // Stats
   document.getElementById('statTotal').textContent = sessions.length;
   document.getElementById('statLocked').textContent =
     sessions.filter(s => s.status === 'locked').length;
@@ -239,7 +245,6 @@ function render() {
 
   const scrollY = window.scrollY;
 
-  // Sessions
   const host = document.getElementById('roster');
   host.innerHTML = sessions.length ? sessions.map(s => {
     const tabs = tabsMap.get(s.id) ?? [];
@@ -305,7 +310,6 @@ function render() {
               data-id="${s.id}">End session</button>
           </div>
         </div>
-
         <div class="session-body">
           <div>
             ${currentHtml}
@@ -317,7 +321,6 @@ function render() {
       </div>`;
   }).join('') : '<p style="color:#888;">No active sessions.</p>';
 
-  // Events
   document.getElementById('events').innerHTML = events.length ? events.map(e => `
     <div class="event-row">
       <span>
@@ -329,7 +332,6 @@ function render() {
       <span style="color:#999;">${timeAgo(e.occurred_at)}</span>
     </div>`).join('') : '<div class="event-row">No events yet.</div>';
 
-  // Wire session buttons
   host.querySelectorAll('button[data-act]').forEach(btn => {
     btn.addEventListener('click', async () => {
       const a = btn.dataset.act;
@@ -345,7 +347,6 @@ function render() {
     });
   });
 
-  // Wire screen preview clicks
   host.querySelectorAll('.screen-wrap').forEach(wrap => {
     wrap.addEventListener('click', () => {
       const img = wrap.querySelector('img');
@@ -357,7 +358,4 @@ function render() {
   refreshScreenshots();
 }
 
-// =================================================================
-// INIT
-// =================================================================
 load();
