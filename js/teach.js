@@ -14,22 +14,38 @@ const loadedScreenshots = new Map();
 let modalOpen = false;
 
 // =================================================================
-// LOAD — only sessions that have heartbeated in the last 3 minutes
+// LOAD
 // =================================================================
 async function load() {
-  const cutoff = new Date(Date.now() - 180000).toISOString();
-
-  const { data: sessions } = await supabase
+  const { data: sessions, error } = await supabase
     .from('sessions')
-    .select('*, profiles!sessions_student_id_fkey(email, full_name)')
+    .select('*, profiles(email, full_name)')
     .is('ended_at', null)
-    .gte('last_seen_at', cutoff)
     .order('started_at', { ascending: false });
 
-  sessionsMap.clear();
-  for (const s of sessions ?? []) sessionsMap.set(s.id, s);
+  if (error) {
+    console.error('[roster] sessions query error:', error);
+    document.getElementById('roster').innerHTML =
+      `<p style="color:#dc2626;">Query error: ${error.message}</p>`;
+    return;
+  }
 
-  const { data: tabs } = await supabase.from('tab_snapshots').select('*');
+  console.log('[roster] got', sessions?.length ?? 0, 'open sessions');
+
+  sessionsMap.clear();
+  const cutoff = Date.now() - 180000;
+  for (const s of sessions ?? []) {
+    const age = Date.now() - new Date(s.last_seen_at).getTime();
+    if (age > 180000) {
+      console.log('[roster] skipping stale session', s.id, 'age(ms)=', age);
+      continue;
+    }
+    sessionsMap.set(s.id, s);
+  }
+
+  const { data: tabs, error: tabErr } = await supabase.from('tab_snapshots').select('*');
+  if (tabErr) console.error('[roster] tabs query error:', tabErr);
+
   tabsMap.clear();
   for (const t of tabs ?? []) {
     if (!tabsMap.has(t.session_id)) tabsMap.set(t.session_id, []);
@@ -44,19 +60,13 @@ async function load() {
 supabase.channel('teacher-stream')
   .on('postgres_changes', { event: '*', schema: 'public', table: 'sessions' },
     (p) => {
-      if (p.eventType === 'DELETE') {
-        sessionsMap.delete(p.old.id);
+      if (p.eventType === 'DELETE' || p.new?.ended_at) {
+        sessionsMap.delete(p.new?.id ?? p.old.id);
         render();
         return;
       }
-      if (p.new.ended_at) {
-        sessionsMap.delete(p.new.id);
-        render();
-        return;
-      }
-      // Stale check — drop sessions that stop heartbeating
-      const ageMs = Date.now() - new Date(p.new.last_seen_at).getTime();
-      if (ageMs > 180000) {
+      const age = Date.now() - new Date(p.new.last_seen_at).getTime();
+      if (age > 180000) {
         sessionsMap.delete(p.new.id);
         render();
         return;
@@ -79,7 +89,7 @@ supabase.channel('teacher-stream')
     })
   .subscribe();
 
-// Sweep every 30s to hide sessions that stopped heartbeating
+// Sweep every 30s
 setInterval(() => {
   let changed = false;
   const cutoff = Date.now() - 180000;
@@ -189,23 +199,19 @@ async function refreshScreenshots() {
 setInterval(refreshScreenshots, 4000);
 
 // =================================================================
-// FULLSCREEN PREVIEW MODAL
+// MODAL
 // =================================================================
 function openModal(src, alt) {
   if (modalOpen) return;
   modalOpen = true;
-
   const div = document.createElement('div');
   div.className = 'screen-modal';
   div.innerHTML = `<img src="${src}" alt="${esc(alt)}" />`;
-
   const close = () => {
-    div.remove();
-    modalOpen = false;
+    div.remove(); modalOpen = false;
     document.removeEventListener('keydown', onEsc);
   };
   const onEsc = (e) => { if (e.key === 'Escape') close(); };
-
   div.addEventListener('click', close);
   document.addEventListener('keydown', onEsc);
   document.body.appendChild(div);
@@ -287,7 +293,6 @@ function render() {
               data-sid="${s.id}" data-uid="${s.student_id}">Close all</button>
           </div>
         </div>
-
         <div class="session-body">
           <div>
             ${currentHtml}
@@ -299,7 +304,6 @@ function render() {
       </div>`;
   }).join('');
 
-  // Wire buttons
   host.querySelectorAll('button[data-act]').forEach(btn => {
     btn.addEventListener('click', async () => {
       const a = btn.dataset.act;
@@ -314,7 +318,6 @@ function render() {
     });
   });
 
-  // Wire screen preview clicks
   host.querySelectorAll('.screen-wrap').forEach(wrap => {
     wrap.addEventListener('click', () => {
       const img = wrap.querySelector('img');
@@ -326,7 +329,4 @@ function render() {
   refreshScreenshots();
 }
 
-// =================================================================
-// INIT
-// =================================================================
 load();
