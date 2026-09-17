@@ -37,12 +37,14 @@ export default function TeacherRoster() {
   }, [])
 
   const closeTab = async (sessionId, studentId, tabId, url) => {
+    let domain = ''
+    try { domain = new URL(url).hostname } catch {}
     await supabase.from('tab_commands').insert({
       target_session_id: sessionId,
       target_student_id: studentId,
       command: 'close',
       tab_id: tabId,
-      domain: new URL(url).hostname
+      domain
     })
   }
 
