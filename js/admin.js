@@ -12,13 +12,16 @@ const events = [];
 let modalOpen = false;
 
 // =================================================================
-// LOAD
+// LOAD — only sessions alive in the last 3 minutes
 // =================================================================
 async function load() {
+  const cutoff = new Date(Date.now() - 180000).toISOString();
+
   const [{ data: sessions }, { data: tabs }, { data: evs }] = await Promise.all([
     supabase.from('sessions')
       .select('*, profiles!sessions_student_id_fkey(email, full_name)')
       .is('ended_at', null)
+      .gte('last_seen_at', cutoff)
       .order('started_at', { ascending: false }),
     supabase.from('tab_snapshots').select('*'),
     supabase.from('focus_events')
@@ -49,9 +52,16 @@ supabase.channel('admin-stream')
     (p) => {
       if (p.eventType === 'DELETE' || p.new?.ended_at) {
         sessionsMap.delete(p.new?.id ?? p.old.id);
-      } else {
-        sessionsMap.set(p.new.id, { ...sessionsMap.get(p.new.id), ...p.new });
+        render();
+        return;
       }
+      const ageMs = Date.now() - new Date(p.new.last_seen_at).getTime();
+      if (ageMs > 180000) {
+        sessionsMap.delete(p.new.id);
+        render();
+        return;
+      }
+      sessionsMap.set(p.new.id, { ...sessionsMap.get(p.new.id), ...p.new });
       render();
     })
   .on('postgres_changes', { event: '*', schema: 'public', table: 'tab_snapshots' },
@@ -74,6 +84,19 @@ supabase.channel('admin-stream')
       render();
     })
   .subscribe();
+
+// Sweep every 30s to hide stale sessions
+setInterval(() => {
+  let changed = false;
+  const cutoff = Date.now() - 180000;
+  for (const [id, s] of sessionsMap) {
+    if (new Date(s.last_seen_at).getTime() < cutoff) {
+      sessionsMap.delete(id);
+      changed = true;
+    }
+  }
+  if (changed) render();
+}, 30000);
 
 // =================================================================
 // ACTIONS
@@ -214,7 +237,6 @@ function render() {
     events.filter(e => e.event_type === 'close_attempt').length;
   document.getElementById('statTabs').textContent = tabsTotal;
 
-  // Preserve scroll
   const scrollY = window.scrollY;
 
   // Sessions
